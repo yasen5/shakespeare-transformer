@@ -4,7 +4,6 @@ from . import constants
 from . import shared
 from . import attention
 from . import feedforward
-import math
 
 def ResetGrad(params):
     for param in params:
@@ -29,15 +28,10 @@ class Transformer():
             self.params += attention_head.params
         for param in self.params:
             param.requires_grad = True
-        self.positional_encoding = torch.empty((constants.CONTEXT_WINDOW_SIZE, constants.N_FEATURE_DIMS), device=shared.device)
-        with torch.no_grad():
-            for position in range(constants.CONTEXT_WINDOW_SIZE):
-                self.positional_encoding[position] = torch.tensor([
-                    math.sin(position / math.pow(10000, 2 * (i // 2) / constants.N_FEATURE_DIMS))
-                    if i % 2 == 0
-                    else math.cos(position / math.pow(10000, 2 * (i // 2) / constants.N_FEATURE_DIMS))
-                    for i in range(constants.N_FEATURE_DIMS)
-                ], device=shared.device)
+        positions = torch.arange(constants.CONTEXT_WINDOW_SIZE, device=shared.device).unsqueeze(1)
+        feature_indices = torch.arange(constants.N_FEATURE_DIMS, device=shared.device)
+        angles = positions / torch.pow(10000, 2 * (feature_indices // 2) / constants.N_FEATURE_DIMS)
+        self.positional_encoding = torch.where(feature_indices % 2 == 0, torch.sin(angles), torch.cos(angles))
         self.positional_encoding.requires_grad_(False)
         self.learning_rate = constants.LEARNING_RATE
         self.optimizer = torch.optim.Adam(self.params, lr=self.learning_rate)
@@ -47,9 +41,7 @@ class Transformer():
     def forward(self, context):
         feature_vectors = self.feature_embedding_table[context]
         feature_vectors = feature_vectors + self.positional_encoding
-        attended_feature_vectors = torch.empty((constants.N_BATCHES, constants.CONTEXT_WINDOW_SIZE, constants.N_ATTENTION_HEADS * constants.N_FEATURE_DIMS), device=shared.device)
-        for i in range(constants.N_BATCHES):
-            attended_feature_vectors[i] = shared.LayerNorm(torch.concat([attention_head.attend(feature_vectors[i]) for attention_head in self.attention_heads], dim=-1));
+        attended_feature_vectors = shared.LayerNorm(torch.concat([attention_head.attend(feature_vectors) for attention_head in self.attention_heads], dim=-1))
         if constants.DEBUG: print("Attended feature vectors: ", attended_feature_vectors.shape)
         mixed_feature_vectors = attended_feature_vectors @ self.feature_mixer
         if constants.DEBUG: print("Mixed: ", mixed_feature_vectors.shape)
