@@ -24,13 +24,13 @@ full_text = torch.tensor(encode(text), dtype=torch.int64) # must be int64
 # TODO tune
 CONTEXT_WINDOW_SIZE = 32
 N_BATCHES = 3
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 1e-2
 LEARNING_RATE_DECAY = 0.999
-EPOCHS = int(1e3)
+EPOCHS = int(5e3)
 N_ATTENTION_HEADS = 4
 N_FEATURE_DIMS = 64
 QUERY_SIZE = 4
-N_UNIQUE_CHARS = 65
+N_UNIQUE_CHARS = len(unique_chars)
 SEED = 42
 N_HIDDEN_NEURONS = 200
 DROPOUT = 0.01
@@ -58,7 +58,7 @@ dev_data = full_text[dev_cutoff:]
 def GetRandomBatch(data):
     batch_start_indices =  torch.randint(low=0, high=len(data) - CONTEXT_WINDOW_SIZE, size=(N_BATCHES,))
     inputs = torch.stack([data[i:i+CONTEXT_WINDOW_SIZE] for i in batch_start_indices])
-    labels = torch.stack([data[i+CONTEXT_WINDOW_SIZE] for i in batch_start_indices])
+    labels = torch.stack([data[i+1:i+CONTEXT_WINDOW_SIZE+1] for i in batch_start_indices])
     if DEBUG: print("BATCH", inputs.shape, labels.shape)
     return inputs, labels
 
@@ -189,6 +189,7 @@ class Transformer():
         for param in self.params:
             param.requires_grad = True
         self.learning_rate = LEARNING_RATE
+        self.optimizer = torch.optim.Adam(self.params, lr=self.learning_rate)
         self.dropout = nn.Dropout(DROPOUT)
         # self.attended_feature_vectors = torch.empty((N_BATCHES, CONTEXT_WINDOW_SIZE, N_ATTENTION_HEADS * N_FEATURE_DIMS))
 
@@ -204,13 +205,13 @@ class Transformer():
         if DEBUG: print("Dropout: ", mixed_feature_vectors.shape)
         output = self.feed_forward.forward(LayerNorm(mixed_feature_vectors))
         if DEBUG: print("FF: ", output.shape)
-        return output[:, -1, :]
+        return output
 
     def backward(self, output, label):
         loss = F.cross_entropy(output, label)
-        ResetGrad(self.params)
+        self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        ApplyGrad(self.params, self.learning_rate)
+        self.optimizer.step()
         return loss.item()
 
     def summarize(self):
@@ -227,7 +228,9 @@ transformer.summarize()
 
 for i in range(EPOCHS):
     X_batch, Y_batch = GetRandomBatch(train_data);
-    loss = transformer.backward(transformer.forward(X_batch), Y_batch)
+    out = transformer.forward(X_batch)
+    B, T, C = out.shape
+    loss = transformer.backward(out.view(B*T, C), Y_batch.view(B*T))
     if (i % 1 == 0):
         print(f"loss: {loss}")
 
@@ -237,8 +240,10 @@ def DecodeTokenList(token_list):
 
 
 def TestModel(transformer, data, n_tokens=10):
-    # Use first example in the batch as the starting context
-    context = X_batch[0].clone()
+    X_test, _ = GetRandomBatch(data)
+    # X_test = X_batch
+    context = X_test[0].clone()
+    start_context = context.clone()
 
     print("START:")
     print(DecodeTokenList(context))
@@ -253,9 +258,10 @@ def TestModel(transformer, data, n_tokens=10):
         # so repeat the same context N_BATCHES times.
         context_batch = context_batch.repeat(N_BATCHES, 1)
 
-        # Predict next token from first batch row
-        logits = transformer.forward(context_batch)
-        pred = logits[0].argmax(dim=-1)
+        # Predict next token from the final position in the first batch row
+        with torch.no_grad():
+            logits = transformer.forward(context_batch)
+        pred = logits[0, -1].argmax(dim=-1)
 
         generated_tokens.append(pred)
 
@@ -268,7 +274,7 @@ def TestModel(transformer, data, n_tokens=10):
     print(DecodeTokenList(generated_tokens))
 
     print("\nFULL:")
-    print(DecodeTokenList(X_batch[0]) + DecodeTokenList(generated_tokens))
+    print(DecodeTokenList(start_context) + DecodeTokenList(generated_tokens))
 
 TestModel(transformer, train_data, n_tokens=10)
 
