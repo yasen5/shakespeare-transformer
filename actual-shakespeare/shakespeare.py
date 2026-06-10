@@ -12,7 +12,9 @@ unique_chars = sorted(list(set(text)))
 tokenizer_map = {char : i for i,char in enumerate(unique_chars)}
 untokenizer_map = {i : char for i,char in enumerate(unique_chars)}
 encode = lambda string : [tokenizer_map[char] for char in string]
-decode = lambda token_list : [untokenizer_map[token] for token in token_list]
+decode = lambda token_list: ''.join(
+    untokenizer_map[int(token)] for token in token_list
+)
 
 
 import torch
@@ -24,7 +26,7 @@ CONTEXT_WINDOW_SIZE = 32
 N_BATCHES = 3
 LEARNING_RATE = 1e-3
 LEARNING_RATE_DECAY = 0.999
-EPOCHS = int(1e5)
+EPOCHS = int(1e3)
 N_ATTENTION_HEADS = 4
 N_FEATURE_DIMS = 64
 QUERY_SIZE = 4
@@ -32,6 +34,20 @@ N_UNIQUE_CHARS = 65
 SEED = 42
 N_HIDDEN_NEURONS = 200
 DROPOUT = 0.01
+DEBUG = False
+# CONTEXT_WINDOW_SIZE = 3
+# N_BATCHES = 3
+# LEARNING_RATE = 1e-3
+# LEARNING_RATE_DECAY = 0.999
+# EPOCHS = int(1e0)
+# N_ATTENTION_HEADS = 1
+# N_FEATURE_DIMS = 4
+# QUERY_SIZE = 4
+# N_UNIQUE_CHARS = 65
+# SEED = 42
+# N_HIDDEN_NEURONS = 200
+# DROPOUT = 0.01
+# DEBUG = True
 
 
 dev_cutoff = int(0.9 * len(full_text)) # TODO add test split
@@ -42,9 +58,8 @@ dev_data = full_text[dev_cutoff:]
 def GetRandomBatch(data):
     batch_start_indices =  torch.randint(low=0, high=len(data) - CONTEXT_WINDOW_SIZE, size=(N_BATCHES,))
     inputs = torch.stack([data[i:i+CONTEXT_WINDOW_SIZE] for i in batch_start_indices])
-    # labels = torch.stack([data[i+1:i+CONTEXT_WINDOW_SIZE+1] for i in batch_start_indices])
     labels = torch.stack([data[i+CONTEXT_WINDOW_SIZE] for i in batch_start_indices])
-    print(inputs.shape, labels.shape)
+    if DEBUG: print("BATCH", inputs.shape, labels.shape)
     return inputs, labels
 
 
@@ -54,8 +69,35 @@ def LayerNorm(x):
     return (x - mean) / (std + 1e-5)
 
 
+class CheckError(RuntimeError):
+    pass
+
+
+def _normalize_for_check(x):
+    # Treat torch.Size, tuple, and list shapes as equivalent.
+    if isinstance(x, (list, tuple)):
+        return tuple(x)
+
+    # Avoid requiring torch import just for this helper.
+    if type(x).__name__ == "Size" and type(x).__module__.startswith("torch"):
+        return tuple(x)
+
+    return x
+
+
+def check_eq(left, right, left_name="left", right_name="right"):
+    left_cmp = _normalize_for_check(left)
+    right_cmp = _normalize_for_check(right)
+
+    if left_cmp != right_cmp:
+        raise CheckError(
+            f"CHECK_EQ failed: {left_name} == {right_name}\n"
+            f"  {left_name}:  {left!r}\n"
+            f"  {right_name}: {right!r}"
+        )
+
+
 import math
-import copy
 import torch.nn as nn
 
 class AttentionHead():
@@ -67,53 +109,58 @@ class AttentionHead():
         self.params = [self.query_matrix, self.key_matrix, self.value_matrix_up, self.value_matrix_down]
         for param in self.params:
             param.requires_grad = True
-
-        self.query_vectors = torch.empty((QUERY_SIZE, CONTEXT_WINDOW_SIZE))
-        self.key_vectors = torch.empty((QUERY_SIZE, CONTEXT_WINDOW_SIZE))
-        self.attention_matrix = torch.empty((CONTEXT_WINDOW_SIZE, CONTEXT_WINDOW_SIZE))
-        self.attended_feature_vectors = torch.empty((CONTEXT_WINDOW_SIZE, N_FEATURE_DIMS))
+        # self.attention_matrix = torch.empty((CONTEXT_WINDOW_SIZE, CONTEXT_WINDOW_SIZE))
 
     def attend(self, feature_vectors):
-        print("ATTENTION")
-        self.attended_feature_vectors = copy.deepcopy(feature_vectors)
+        check_eq(feature_vectors.shape, [CONTEXT_WINDOW_SIZE, N_FEATURE_DIMS])
+        if DEBUG: print("ATTENTION")
         query_vectors = feature_vectors @ self.query_matrix  # TODO pytorch vectorize
         key_vectors = feature_vectors @ self.key_matrix # TODO pytorch vectorize
         attention_matrix = query_vectors @ key_vectors.t()
-        print(query_vectors.shape, key_vectors.shape, attention_matrix.shape)
+        if DEBUG: print(query_vectors.shape, key_vectors.shape, attention_matrix.shape)
 
-        attention_matrix /= math.sqrt(N_FEATURE_DIMS)
+        attention_matrix /= math.sqrt(QUERY_SIZE)
+        if DEBUG: print(attention_matrix)
         for row in range(attention_matrix.shape[0]):
             for col in range(attention_matrix.shape[1]):
                 if (col > row):
                     attention_matrix[row,col] = -math.inf;
-        attention_matrix = torch.softmax(attention_matrix, dim=0)
-        for row in range(CONTEXT_WINDOW_SIZE):
-            for col in range(CONTEXT_WINDOW_SIZE):
-                self.attended_feature_vectors[row] += attention_matrix[row,col] * self.value_matrix_up @ self.value_matrix_down @ feature_vectors[row]
-        return self.attended_feature_vectors.view(-1, CONTEXT_WINDOW_SIZE, N_FEATURE_DIMS)
+        attention_matrix = torch.softmax(attention_matrix, dim=1)
+        enrichment_stack = torch.zeros(feature_vectors.shape)
+        for row in range(attention_matrix.shape[0]):
+            for col in range(attention_matrix.shape[1]):
+                enrichment_stack[row] += attention_matrix[row,col] * self.value_matrix_up @ self.value_matrix_down @ feature_vectors[col]
+        if DEBUG: print(feature_vectors.shape, enrichment_stack.shape)
+        return (feature_vectors + enrichment_stack).view(-1, CONTEXT_WINDOW_SIZE, N_FEATURE_DIMS)
 
+
+def XavierFactor(param):
+    return math.sqrt(2 / (param.shape[0] + param.shape[1]))
 
 class FeedForward():
     def __init__(self):
         g = torch.Generator().manual_seed(SEED) # for reproducibility
         self.W1 = torch.randn((N_ATTENTION_HEADS * N_FEATURE_DIMS, N_HIDDEN_NEURONS), generator=g)
-        self.b1 = torch.randn((N_HIDDEN_NEURONS), generator=g)
+        self.W1 *= XavierFactor(self.W1)
+        self.b1 = torch.zeros((N_HIDDEN_NEURONS,))
         self.W2 = torch.randn((N_HIDDEN_NEURONS, N_UNIQUE_CHARS), generator=g)
-        self.b2 = torch.randn((N_UNIQUE_CHARS,), generator=g)
+        self.W2 *= XavierFactor(self.W2)
+        self.b2 = torch.zeros((N_UNIQUE_CHARS,))
         self.params = [self.W1, self.b1, self.W2, self.b2]
         self.dropout = nn.Dropout(DROPOUT)
 
     def forward(self, context):
         # context: [BATCH_SIZE, CONTEXT_WINDOW_SIZE, N_FEATURE_DIMS]
-        print("FORWARD")
-        print(context.shape)
+        check_eq(context.shape, [N_BATCHES, CONTEXT_WINDOW_SIZE, N_ATTENTION_HEADS * N_FEATURE_DIMS])
+        if DEBUG: print("FORWARD")
+        if DEBUG: print(context.shape)
         hidden_output = context @ self.W1 + self.b1
-        print(hidden_output.shape)
+        if DEBUG: print(hidden_output.shape)
         hidden_output = torch.where(hidden_output > 0, hidden_output, 0)
-        print(hidden_output.shape)
+        if DEBUG: print(hidden_output.shape)
         output = hidden_output @ self.W2 + self.b2
-        print(output.shape)
-        hidden_output = self.dropout(hidden_output)
+        if DEBUG: print(output.shape)
+        check_eq(output.shape, [N_BATCHES, CONTEXT_WINDOW_SIZE, N_UNIQUE_CHARS])
         return output
 
 
@@ -124,13 +171,15 @@ def ResetGrad(params):
         param.grad = None
 
 def ApplyGrad(params, learning_rate):
-    for param in params:
-        param.data -= learning_rate * param.grad
+    with torch.no_grad():
+        for param in params:
+            param -= learning_rate * param.grad
 
 class Transformer():
     def __init__(self):
         g = torch.Generator().manual_seed(SEED) # for reproducibility
         self.feature_embedding_table = torch.randn((N_UNIQUE_CHARS, N_FEATURE_DIMS))
+        self.feature_embedding_table *= XavierFactor(self.feature_embedding_table)
         self.feature_mixer = torch.randn((N_ATTENTION_HEADS * N_FEATURE_DIMS, N_ATTENTION_HEADS * N_FEATURE_DIMS))
         self.attention_heads = [AttentionHead() for _ in range(N_ATTENTION_HEADS)]
         self.feed_forward = FeedForward()
@@ -141,24 +190,28 @@ class Transformer():
             param.requires_grad = True
         self.learning_rate = LEARNING_RATE
         self.dropout = nn.Dropout(DROPOUT)
+        # self.attended_feature_vectors = torch.empty((N_BATCHES, CONTEXT_WINDOW_SIZE, N_ATTENTION_HEADS * N_FEATURE_DIMS))
 
     def forward(self, context):
         feature_vectors = self.feature_embedding_table[context]
-        attended_feature_vectors = LayerNorm(torch.concat([attention_head.attend(feature_vectors.view(N_BATCHES * CONTEXT_WINDOW_SIZE, -1)) for attention_head in self.attention_heads], dim=-1))
-        print("Attended feature vectors: ", attended_feature_vectors.shape)
+        attended_feature_vectors = torch.empty((N_BATCHES, CONTEXT_WINDOW_SIZE, N_ATTENTION_HEADS * N_FEATURE_DIMS))
+        for i in range(N_BATCHES):
+            attended_feature_vectors[i] = LayerNorm(torch.concat([attention_head.attend(feature_vectors[i]) for attention_head in self.attention_heads], dim=-1));
+        if DEBUG: print("Attended feature vectors: ", attended_feature_vectors.shape)
         mixed_feature_vectors = attended_feature_vectors @ self.feature_mixer
-        print("Mixed: ", mixed_feature_vectors.shape)
+        if DEBUG: print("Mixed: ", mixed_feature_vectors.shape)
         mixed_feature_vectors = self.dropout(mixed_feature_vectors)
-        print("Dropout: ", mixed_feature_vectors.shape)
-        output = LayerNorm(self.feed_forward.forward(mixed_feature_vectors))
-        print("FF: ", output.shape)
-        return output[:, 0, :]
+        if DEBUG: print("Dropout: ", mixed_feature_vectors.shape)
+        output = self.feed_forward.forward(LayerNorm(mixed_feature_vectors))
+        if DEBUG: print("FF: ", output.shape)
+        return output[:, -1, :]
 
     def backward(self, output, label):
         loss = F.cross_entropy(output, label)
         ResetGrad(self.params)
         loss.backward()
         ApplyGrad(self.params, self.learning_rate)
+        return loss.item()
 
     def summarize(self):
         print("=====ATTENTION=====")
@@ -172,10 +225,52 @@ X_batch, Y_batch = GetRandomBatch(train_data)
 transformer.summarize()
 
 
-transformer.backward(transformer.forward(X_batch), Y_batch)
+for i in range(EPOCHS):
+    X_batch, Y_batch = GetRandomBatch(train_data);
+    loss = transformer.backward(transformer.forward(X_batch), Y_batch)
+    if (i % 1 == 0):
+        print(f"loss: {loss}")
 
 
-X_batch.shape
+def DecodeTokenList(token_list):
+    return ''.join(untokenizer_map[int(token)] for token in token_list)
+
+
+def TestModel(transformer, data, n_tokens=10):
+    # Use first example in the batch as the starting context
+    context = X_batch[0].clone()
+
+    print("START:")
+    print(DecodeTokenList(context))
+
+    generated_tokens = []
+
+    for i in range(n_tokens):
+        # Add fake batch dimension: [T] -> [1, T]
+        context_batch = context.view(1, CONTEXT_WINDOW_SIZE)
+
+        # Your transformer currently expects N_BATCHES exactly,
+        # so repeat the same context N_BATCHES times.
+        context_batch = context_batch.repeat(N_BATCHES, 1)
+
+        # Predict next token from first batch row
+        logits = transformer.forward(context_batch)
+        pred = logits[0].argmax(dim=-1)
+
+        generated_tokens.append(pred)
+
+        # Slide context window left and append prediction
+        context = torch.cat([context[1:], pred.view(1)], dim=0)
+
+        print(f"PRED {i + 1}: {untokenizer_map[int(pred)]!r}")
+
+    print("\nGENERATED:")
+    print(DecodeTokenList(generated_tokens))
+
+    print("\nFULL:")
+    print(DecodeTokenList(X_batch[0]) + DecodeTokenList(generated_tokens))
+
+TestModel(transformer, train_data, n_tokens=10)
 
 
 
