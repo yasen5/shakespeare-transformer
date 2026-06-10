@@ -18,7 +18,15 @@ decode = lambda token_list: ''.join(
 
 
 import torch
-full_text = torch.tensor(encode(text), dtype=torch.int64) # must be int64
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+
+torch.manual_seed(42)
+full_text = torch.tensor(encode(text), dtype=torch.int64, device=device) # must be int64
 
 
 # TODO tune
@@ -56,9 +64,16 @@ dev_data = full_text[dev_cutoff:]
 
 
 def GetRandomBatch(data):
-    batch_start_indices =  torch.randint(low=0, high=len(data) - CONTEXT_WINDOW_SIZE, size=(N_BATCHES,))
-    inputs = torch.stack([data[i:i+CONTEXT_WINDOW_SIZE] for i in batch_start_indices])
-    labels = torch.stack([data[i+1:i+CONTEXT_WINDOW_SIZE+1] for i in batch_start_indices])
+    batch_start_indices = torch.randint(
+        low=0,
+        high=len(data) - CONTEXT_WINDOW_SIZE,
+        size=(N_BATCHES,),
+        device=device,
+    )
+    offsets = torch.arange(CONTEXT_WINDOW_SIZE, device=device)
+    batch_positions = batch_start_indices[:, None] + offsets
+    inputs = data[batch_positions]
+    labels = data[batch_positions + 1]
     if DEBUG: print("BATCH", inputs.shape, labels.shape)
     return inputs, labels
 
@@ -102,10 +117,10 @@ import torch.nn as nn
 
 class AttentionHead():
     def __init__(self):
-        self.query_matrix = torch.randn((N_FEATURE_DIMS, QUERY_SIZE))
-        self.key_matrix = torch.randn(self.query_matrix.shape)
-        self.value_matrix_up = torch.randn((N_FEATURE_DIMS, QUERY_SIZE))
-        self.value_matrix_down = torch.randn((QUERY_SIZE, N_FEATURE_DIMS))
+        self.query_matrix = torch.randn((N_FEATURE_DIMS, QUERY_SIZE), device=device)
+        self.key_matrix = torch.randn(self.query_matrix.shape, device=device)
+        self.value_matrix_up = torch.randn((N_FEATURE_DIMS, QUERY_SIZE), device=device)
+        self.value_matrix_down = torch.randn((QUERY_SIZE, N_FEATURE_DIMS), device=device)
         self.params = [self.query_matrix, self.key_matrix, self.value_matrix_up, self.value_matrix_down]
         for param in self.params:
             param.requires_grad = True
@@ -126,7 +141,7 @@ class AttentionHead():
                 if (col > row):
                     attention_matrix[row,col] = -math.inf;
         attention_matrix = torch.softmax(attention_matrix, dim=1)
-        enrichment_stack = torch.zeros(feature_vectors.shape)
+        enrichment_stack = torch.zeros(feature_vectors.shape, device=device)
         for row in range(attention_matrix.shape[0]):
             for col in range(attention_matrix.shape[1]):
                 enrichment_stack[row] += attention_matrix[row,col] * self.value_matrix_up @ self.value_matrix_down @ feature_vectors[col]
@@ -139,13 +154,12 @@ def XavierFactor(param):
 
 class FeedForward():
     def __init__(self):
-        g = torch.Generator().manual_seed(SEED) # for reproducibility
-        self.W1 = torch.randn((N_ATTENTION_HEADS * N_FEATURE_DIMS, N_HIDDEN_NEURONS), generator=g)
+        self.W1 = torch.randn((N_ATTENTION_HEADS * N_FEATURE_DIMS, N_HIDDEN_NEURONS), device=device)
         self.W1 *= XavierFactor(self.W1)
-        self.b1 = torch.zeros((N_HIDDEN_NEURONS,))
-        self.W2 = torch.randn((N_HIDDEN_NEURONS, N_UNIQUE_CHARS), generator=g)
+        self.b1 = torch.zeros((N_HIDDEN_NEURONS,), device=device)
+        self.W2 = torch.randn((N_HIDDEN_NEURONS, N_UNIQUE_CHARS), device=device)
         self.W2 *= XavierFactor(self.W2)
-        self.b2 = torch.zeros((N_UNIQUE_CHARS,))
+        self.b2 = torch.zeros((N_UNIQUE_CHARS,), device=device)
         self.params = [self.W1, self.b1, self.W2, self.b2]
         self.dropout = nn.Dropout(DROPOUT)
 
@@ -177,10 +191,9 @@ def ApplyGrad(params, learning_rate):
 
 class Transformer():
     def __init__(self):
-        g = torch.Generator().manual_seed(SEED) # for reproducibility
-        self.feature_embedding_table = torch.randn((N_UNIQUE_CHARS, N_FEATURE_DIMS))
+        self.feature_embedding_table = torch.randn((N_UNIQUE_CHARS, N_FEATURE_DIMS), device=device)
         self.feature_embedding_table *= XavierFactor(self.feature_embedding_table)
-        self.feature_mixer = torch.randn((N_ATTENTION_HEADS * N_FEATURE_DIMS, N_ATTENTION_HEADS * N_FEATURE_DIMS))
+        self.feature_mixer = torch.randn((N_ATTENTION_HEADS * N_FEATURE_DIMS, N_ATTENTION_HEADS * N_FEATURE_DIMS), device=device)
         self.attention_heads = [AttentionHead() for _ in range(N_ATTENTION_HEADS)]
         self.feed_forward = FeedForward()
         self.params = [self.feature_embedding_table, self.feature_mixer] + self.feed_forward.params 
@@ -195,7 +208,10 @@ class Transformer():
 
     def forward(self, context):
         feature_vectors = self.feature_embedding_table[context]
-        attended_feature_vectors = torch.empty((N_BATCHES, CONTEXT_WINDOW_SIZE, N_ATTENTION_HEADS * N_FEATURE_DIMS))
+        attended_feature_vectors = torch.empty(
+            (N_BATCHES, CONTEXT_WINDOW_SIZE, N_ATTENTION_HEADS * N_FEATURE_DIMS),
+            device=device,
+        )
         for i in range(N_BATCHES):
             attended_feature_vectors[i] = LayerNorm(torch.concat([attention_head.attend(feature_vectors[i]) for attention_head in self.attention_heads], dim=-1));
         if DEBUG: print("Attended feature vectors: ", attended_feature_vectors.shape)
@@ -277,7 +293,5 @@ def TestModel(transformer, data, n_tokens=10):
     print(DecodeTokenList(start_context) + DecodeTokenList(generated_tokens))
 
 TestModel(transformer, train_data, n_tokens=10)
-
-
 
 
