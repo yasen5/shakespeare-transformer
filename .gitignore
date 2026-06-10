@@ -2,3 +2,4 @@
 answers/
 out.txt
 pyplotter.py
+**/__pycache__
