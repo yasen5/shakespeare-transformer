@@ -1,6 +1,6 @@
 import torch
-import constants
-import shared
+from . import constants
+from . import shared
 import torch.nn as nn
 
 class FeedForward():

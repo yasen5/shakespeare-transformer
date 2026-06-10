@@ -1,6 +1,6 @@
 import torch
-import constants
-import shared
+from . import constants
+from . import shared
 text = open('input.txt', 'r').read()
 text[:10]
 unique_chars = sorted(list(set(text)))

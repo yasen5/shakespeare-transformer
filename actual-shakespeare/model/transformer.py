@@ -1,9 +1,9 @@
 import torch.nn.functional as F
 import torch
-import constants
-import shared
-import attention
-import feedforward
+from . import constants
+from . import shared
+from . import attention
+from . import feedforward
 import math
 
 def ResetGrad(params):

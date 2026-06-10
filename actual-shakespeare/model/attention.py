@@ -1,8 +1,8 @@
 import math
 import torch.nn as nn
 import torch
-import constants
-import shared
+from . import constants
+from . import shared
 
 class AttentionHead():
     def __init__(self):
