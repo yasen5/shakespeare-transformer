@@ -13,11 +13,11 @@ class AttentionHead():
         self.value_matrix_down = torch.randn((constants.QUERY_SIZE, constants.N_FEATURE_DIMS), device=shared.device)
         self.params = [self.query_matrix, self.key_matrix, self.value_matrix_up, self.value_matrix_down]
         for param in self.params:
-            param.requires_grad = True
+            param *= shared.XavierFactor(param)
         # self.attention_matrix = torch.empty((constants.CONTEXT_WINDOW_SIZE, constants.CONTEXT_WINDOW_SIZE))
 
     def attend(self, feature_vectors):
-        shared.check_eq(feature_vectors.shape, [constants.N_BATCHES, constants.CONTEXT_WINDOW_SIZE, constants.N_FEATURE_DIMS])
+        shared.check_eq(feature_vectors.shape, [constants.BATCH_SIZE, constants.CONTEXT_WINDOW_SIZE, constants.N_FEATURE_DIMS])
         if constants.DEBUG: print("ATTENTION")
         query_vectors = feature_vectors @ self.query_matrix
         key_vectors = feature_vectors @ self.key_matrix

@@ -4,6 +4,7 @@ from . import constants
 from . import shared
 from . import attention
 from . import feedforward
+from . import transformer_block
 
 def ResetGrad(params):
     for param in params:
@@ -19,13 +20,12 @@ class Transformer():
         torch.manual_seed(constants.SEED) # for reproducibility
         self.feature_embedding_table = torch.randn((constants.N_UNIQUE_CHARS, constants.N_FEATURE_DIMS), device=shared.device)
         self.feature_embedding_table *= shared.XavierFactor(self.feature_embedding_table)
-        self.feature_mixer = torch.randn((constants.N_ATTENTION_HEADS * constants.N_FEATURE_DIMS, constants.N_ATTENTION_HEADS * constants.N_FEATURE_DIMS), device=shared.device)
-        self.feature_mixer *= shared.XavierFactor(self.feature_embedding_table)
-        self.attention_heads = [attention.AttentionHead() for _ in range(constants.N_ATTENTION_HEADS)]
-        self.feed_forward = feedforward.FeedForward()
-        self.params = [self.feature_embedding_table, self.feature_mixer] + self.feed_forward.params 
-        for attention_head in self.attention_heads:
-            self.params += attention_head.params
+        self.final_dense = torch.randn((constants.N_FEATURE_DIMS, constants.N_UNIQUE_CHARS), device=shared.device)
+        self.final_dense *= shared.XavierFactor(self.final_dense)
+        self.transformer_blocks = [transformer_block.TransformerBlock() for _ in range(constants.N_TRANSFORMER_BLOCKS)]
+        self.params = [self.feature_embedding_table, self.final_dense]
+        for block in self.transformer_blocks:
+            self.params += block.params
         for param in self.params:
             param.requires_grad = True
         positions = torch.arange(constants.CONTEXT_WINDOW_SIZE, device=shared.device).unsqueeze(1)
@@ -36,20 +36,15 @@ class Transformer():
         self.learning_rate = constants.LEARNING_RATE
         self.optimizer = torch.optim.Adam(self.params, lr=self.learning_rate)
         self.dropout = torch.nn.Dropout(constants.DROPOUT)
-        # self.attended_feature_vectors = torch.empty((N_BATCHES, CONTEXT_WINDOW_SIZE, constants.N_ATTENTION_HEADS * constants.N_FEATURE_DIMS))
 
     def forward(self, context):
         feature_vectors = self.feature_embedding_table[context]
-        feature_vectors = feature_vectors + self.positional_encoding
-        attended_feature_vectors = shared.LayerNorm(torch.concat([attention_head.attend(feature_vectors) for attention_head in self.attention_heads], dim=-1))
-        if constants.DEBUG: print("Attended feature vectors: ", attended_feature_vectors.shape)
-        mixed_feature_vectors = attended_feature_vectors @ self.feature_mixer
-        if constants.DEBUG: print("Mixed: ", mixed_feature_vectors.shape)
-        mixed_feature_vectors = self.dropout(mixed_feature_vectors)
-        if constants.DEBUG: print("Dropout: ", mixed_feature_vectors.shape)
-        output = self.feed_forward.forward(shared.LayerNorm(mixed_feature_vectors))
-        if constants.DEBUG: print("FF: ", output.shape)
-        return output
+        positionally_encoded_feature_vectors = feature_vectors + self.positional_encoding
+        output = positionally_encoded_feature_vectors
+        for block in self.transformer_blocks:
+            output = block.forward(output)
+            if constants.DEBUG : print("Finished block, output shape: ", output.shape)
+        return output @ self.final_dense
     
     def backward(self, output, label):
         loss = F.cross_entropy(output, label)
@@ -57,7 +52,3 @@ class Transformer():
         loss.backward()
         self.optimizer.step()
         return loss.item()
-
-    def summarize(self):
-        print("=====ATTENTION=====")
-        print(f"For each {constants.N_ATTENTION_HEADS} head, query matrix is {self.attention_heads[0].query_matrix.shape}, key matrix is {self.attention_heads[0].key_matrix.shape}, value matrix is {self.attention_heads[0].value_matrix_up.shape} x {self.attention_heads[0].value_matrix_down.shape}")

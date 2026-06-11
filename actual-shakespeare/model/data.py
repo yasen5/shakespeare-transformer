@@ -16,7 +16,7 @@ full_text = torch.tensor(encode(text), dtype=torch.int64, device=shared.device) 
 
 
 def GetRandomBatch(data):
-    batch_start_indices = torch.randint(low=0, high=len(data) - constants.CONTEXT_WINDOW_SIZE, size=(constants.N_BATCHES,), device=shared.device)
+    batch_start_indices = torch.randint(low=0, high=len(data) - constants.CONTEXT_WINDOW_SIZE, size=(constants.BATCH_SIZE,), device=shared.device)
     offsets = torch.arange(constants.CONTEXT_WINDOW_SIZE, device=shared.device)
     inputs = data[batch_start_indices[:, None] + offsets]
     labels = data[batch_start_indices[:, None] + offsets + 1]
