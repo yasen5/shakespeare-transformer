@@ -16,15 +16,18 @@ import torch
 import model.transformer
 import model.data as data
 import model.constants as constants
+import model.shared
 import time
 import matplotlib.pyplot as plt
 from IPython.display import display
 importlib.reload(constants)
 importlib.reload(model.transformer)
 importlib.reload(data)
+importlib.reload(model.shared)
 print("START: ", time.perf_counter())
 if constants.DEBUG: print("Start of file", time.perf_counter())
 transformer = model.transformer.Transformer()
+transformer.to(model.shared.device)
 if constants.DEBUG: print("Transform made", time.perf_counter())
 dev_cutoff = int(0.9 * len(data.full_text)) # TODO add test split
 train_data = data.full_text[:dev_cutoff]
@@ -44,19 +47,24 @@ ax.set_title("Training loss")
 ax.grid(True, alpha=0.3)
 plot_handle = display(fig, display_id=True)
 
+optimizer = torch.optim.AdamW(transformer.parameters(), lr=constants.LEARNING_RATE)
+
 for i in range(constants.EPOCHS):
     if constants.DEBUG: print("Start", time.perf_counter())
     X_batch, Y_batch = data.GetRandomBatch(train_data);
     if constants.DEBUG: print("Got batches", time.perf_counter())
     out = transformer.forward(X_batch)
     if constants.DEBUG: print("Forwad complete", time.perf_counter())
-    B, T, C = out.shape
-    loss = transformer.backward(out.view(B*T, C), Y_batch.view(B*T))
+    loss = transformer.backward(out, Y_batch)
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
     if constants.DEBUG: print("Backward complete", time.perf_counter())
     if (i % plot_every == 0) or (i == constants.EPOCHS - 1):
-        print(f"loss: {loss}")
+        loss_value = loss.detach().cpu().item()
+        print(f"loss: {loss_value}")
         loss_steps.append(i)
-        loss_history.append(loss)
+        loss_history.append(loss_value)
         loss_line.set_data(loss_steps, loss_history)
         ax.relim()
         ax.autoscale_view()
@@ -128,7 +136,7 @@ TestModel(transformer, train_data, n_tokens=100)
 
 
 def ModelContextWindowSize(transformer):
-    return transformer.positional_encoding.shape[0]
+    return transformer.positional_embedding_table.num_embeddings
 
 
 def EncodeFixedContext(text, context_window_size):
@@ -206,5 +214,4 @@ CompareContexts(
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaa the ",
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbb the ",
 )
-
 
