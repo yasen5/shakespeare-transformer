@@ -5,6 +5,7 @@ from . import shared
 from . import attention
 from . import feedforward
 from . import transformer_block
+import torch.nn as nn
 
 def ResetGrad(params):
     for param in params:
@@ -15,40 +16,40 @@ def ApplyGrad(params, learning_rate):
         for param in params:
             param -= learning_rate * param.grad
 
-class Transformer():
+class Transformer(nn.Module):
     def __init__(self):
+        super().__init__()
         torch.manual_seed(constants.SEED) # for reproducibility
-        self.feature_embedding_table = torch.randn((constants.N_UNIQUE_CHARS, constants.N_FEATURE_DIMS), device=shared.device)
-        self.feature_embedding_table *= shared.XavierFactor(self.feature_embedding_table)
-        self.final_dense = torch.randn((constants.N_FEATURE_DIMS, constants.N_UNIQUE_CHARS), device=shared.device)
-        self.final_dense *= shared.XavierFactor(self.final_dense)
-        self.transformer_blocks = [transformer_block.TransformerBlock() for _ in range(constants.N_TRANSFORMER_BLOCKS)]
-        self.params = [self.feature_embedding_table, self.final_dense]
-        for block in self.transformer_blocks:
-            self.params += block.params
-        for param in self.params:
-            param.requires_grad = True
-        positions = torch.arange(constants.CONTEXT_WINDOW_SIZE, device=shared.device).unsqueeze(1)
-        feature_indices = torch.arange(constants.N_FEATURE_DIMS, device=shared.device)
-        angles = positions / torch.pow(10000, 2 * (feature_indices // 2) / constants.N_FEATURE_DIMS)
-        self.positional_encoding = torch.where(feature_indices % 2 == 0, torch.sin(angles), torch.cos(angles))
-        self.positional_encoding.requires_grad_(False)
+        self.feature_embedding_table = nn.Embedding(constants.N_UNIQUE_CHARS, constants.FEATURE_DIMS)
+        self.positional_embedding_table = nn.Embedding(constants.CONTEXT_WINDOW_SIZE, constants.FEATURE_DIMS)
+        self.final_dense = nn.Linear(constants.FEATURE_DIMS, constants.N_UNIQUE_CHARS)
+        self.transformer_blocks = nn.Sequential(*[transformer_block.TransformerBlock() for _ in range(constants.N_TRANSFORMER_BLOCKS)])
         self.learning_rate = constants.LEARNING_RATE
-        self.optimizer = torch.optim.Adam(self.params, lr=self.learning_rate)
-        self.dropout = torch.nn.Dropout(constants.DROPOUT)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, context):
-        feature_vectors = self.feature_embedding_table[context]
-        positionally_encoded_feature_vectors = feature_vectors + self.positional_encoding
+        if constants.DEBUG: print(context.shape)
+        feature_vectors = self.feature_embedding_table(context)
+        if constants.DEBUG: print(feature_vectors.shape)
+        positional_embedding = self.positional_embedding_table(torch.arange(constants.CONTEXT_WINDOW_SIZE, device=shared.device))
+        positionally_encoded_feature_vectors = feature_vectors + positional_embedding
         output = positionally_encoded_feature_vectors
         for block in self.transformer_blocks:
             output = block.forward(output)
             if constants.DEBUG : print("Finished block, output shape: ", output.shape)
-        return output @ self.final_dense
+        return self.final_dense(output)
     
-    def backward(self, output, label):
-        loss = F.cross_entropy(output, label)
-        self.optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        self.optimizer.step()
-        return loss.item()
+    def backward(self, logits, label):
+        B, T, C = logits.shape
+        logits = logits.view(B*T, C)
+        targets = label.view(B*T)
+        loss = F.cross_entropy(logits, targets)
+        return loss
