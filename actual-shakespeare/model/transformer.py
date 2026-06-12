@@ -33,7 +33,7 @@ class Transformer():
         # angles = positions / torch.pow(10000, 2 * (feature_indices // 2) / constants.FEATURE_DIMS)
         # self.positional_encoding = torch.where(feature_indices % 2 == 0, torch.sin(angles), torch.cos(angles))
         # self.positional_encoding.requires_grad_(False)
-        self.positional_encoding = torch.randn((constants.CONTEXT_WINDOW_SIZE, constants.FEATURE_DIMS))
+        self.positional_encoding = torch.randn((constants.CONTEXT_WINDOW_SIZE, constants.FEATURE_DIMS), device=shared.device)
         self.learning_rate = constants.LEARNING_RATE
         self.optimizer = torch.optim.AdamW(self.params, lr=self.learning_rate)
 
@@ -44,7 +44,9 @@ class Transformer():
         for block in self.transformer_blocks:
             output = block.forward(output)
             if constants.DEBUG : print("Finished block, output shape: ", output.shape)
-        return output @ self.final_dense
+        output =  output @ self.final_dense
+        shared.check_eq(output.shape, [constants.BATCH_SIZE, constants.CONTEXT_WINDOW_SIZE, constants.N_UNIQUE_CHARS])
+        return output
     
     def backward(self, logits, label):
         B, T, C = logits.shape

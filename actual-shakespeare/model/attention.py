@@ -9,7 +9,7 @@ class AttentionHead():
     def __init__(self):
         self.query_matrix = torch.randn((constants.FEATURE_DIMS, constants.QUERY_SIZE), device=shared.device)
         self.key_matrix = torch.randn(self.query_matrix.shape, device=shared.device)
-        self.value_matrix_down = torch.randn((constants.QUERY_SIZE, constants.FEATURE_DIMS), device=shared.device)
+        self.value_matrix_down = torch.randn((constants.FEATURE_DIMS, constants.QUERY_SIZE), device=shared.device)
         self.params = [self.query_matrix, self.key_matrix, self.value_matrix_down]
         for param in self.params:
             param *= shared.XavierFactor(param)
