@@ -42,5 +42,6 @@ def check_eq(left, right, left_name="left", right_name="right"):
         )
     
 def XavierFactor(param):
-    return math.sqrt(2 / (param.shape[0] + param.shape[1]))
+    return 0.02
+    # return math.sqrt(2 / (param.shape[0] + param.shape[1]))
     
