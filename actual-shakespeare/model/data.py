@@ -16,7 +16,7 @@ full_text = torch.tensor(encode(text), dtype=torch.int64, device=shared.device) 
 
 
 def GetRandomBatch(data):
-    ix = torch.randint(len(data) - constants.CONTEXT_WINDOW_SIZE, (constants.BATCH_SIZE,))
+    ix = torch.randint(len(data) - constants.CONTEXT_WINDOW_SIZE, (constants.BATCH_SIZE,), device=shared.device)
     x = torch.stack([data[i:i+constants.CONTEXT_WINDOW_SIZE] for i in ix])
     y = torch.stack([data[i+1:i+constants.CONTEXT_WINDOW_SIZE+1] for i in ix])
     x, y = x.to(shared.device), y.to(shared.device)
